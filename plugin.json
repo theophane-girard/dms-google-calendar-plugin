@@ -1,0 +1,21 @@
+{
+  "id": "googleCalendar",
+  "name": "Google Calendar",
+  "description": "Affiche ton agenda Google dans la barre. Authentification OAuth via navigateur.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "theophane",
+  "icon": "event",
+  "type": "widget",
+  "component": "./GoogleCalendar.qml",
+  "settings": "./Settings.qml",
+  "capabilities": [
+    "dankbar-widget"
+  ],
+  "permissions": [
+    "settings_read",
+    "settings_write",
+    "process",
+    "network"
+  ]
+}
