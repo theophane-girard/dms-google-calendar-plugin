@@ -205,8 +205,57 @@ PluginComponent {
                 return false
             }
 
-            // mode = "list" | "form"
+            // mode = "list" | "form" | "details"
             property string mode: "list"
+            property var selectedEvent: null
+
+            function openEventDetails(ev) {
+                if (!ev) return
+                selectedEvent = ev
+                mode = "details"
+                // Pose le focus sur le bouton retour pour que Tab parte de là
+                Qt.callLater(function () {
+                    if (typeof detailsBackBtn !== "undefined" && detailsBackBtn) {
+                        detailsBackBtn.forceActiveFocus()
+                    }
+                })
+            }
+
+            // Liste ordonnée des boutons focusables en mode details
+            function _detailsFocusables() {
+                var list = []
+                if (typeof detailsBackBtn !== "undefined" && detailsBackBtn) list.push(detailsBackBtn)
+                if (typeof detailsMeetBtn !== "undefined" && detailsMeetBtn && detailsMeetBtn.visible) list.push(detailsMeetBtn)
+                if (typeof detailsOpenBtn !== "undefined" && detailsOpenBtn && detailsOpenBtn.visible) list.push(detailsOpenBtn)
+                return list
+            }
+
+            function _detailsMoveFocus(delta) {
+                var items = _detailsFocusables()
+                if (items.length === 0) return
+                var idx = 0
+                for (var i = 0; i < items.length; ++i) {
+                    if (items[i].activeFocus) { idx = i; break }
+                }
+                var next = Math.max(0, Math.min(items.length - 1, idx + delta))
+                items[next].forceActiveFocus()
+            }
+
+            function findFirstUpcomingTodayIndex() {
+                var now = nowTick
+                for (var i = 0; i < focusables.length; ++i) {
+                    var f = focusables[i]
+                    if (f.kind !== "event") continue
+                    var ev = findEventById(f.evId)
+                    if (!ev || !ev.start) continue
+                    var s = new Date(ev.start)
+                    var e = ev.end ? new Date(ev.end) : s
+                    if (!_sameDay(s, now)) continue
+                    if (e <= now) continue
+                    return i
+                }
+                return -1
+            }
 
             Connections {
                 target: root
@@ -274,14 +323,13 @@ PluginComponent {
                 else if (f.kind === "add") mode = "form"
                 else if (f.kind === "event") {
                     var ev = findEventById(f.evId)
-                    if (ev && ev.htmlLink) Quickshell.execDetached(["xdg-open", ev.htmlLink])
-                    if (closePopout) closePopout()
+                    if (ev) openEventDetails(ev)
                 }
             }
 
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Escape) {
-                    if (mode === "form") { mode = "list" }
+                    if (mode === "form" || mode === "details") { mode = "list" }
                     else if (closePopout) closePopout()
                     event.accepted = true
                     return
@@ -289,14 +337,36 @@ PluginComponent {
                 // En mode form, on laisse les DankTextField gérer les touches.
                 if (mode === "form") return
 
+                // En mode details : h/k = prev, j/l = next entre les boutons.
+                // Si aucun bouton n'a le focus, space/enter ouvre meet (fallback).
+                if (mode === "details") {
+                    if (event.key === Qt.Key_J || event.key === Qt.Key_L) {
+                        _detailsMoveFocus(1); event.accepted = true
+                    } else if (event.key === Qt.Key_K || event.key === Qt.Key_H) {
+                        _detailsMoveFocus(-1); event.accepted = true
+                    } else if (event.key === Qt.Key_Space
+                               || event.key === Qt.Key_Return
+                               || event.key === Qt.Key_Enter) {
+                        if (selectedEvent && selectedEvent.meetLink) {
+                            Quickshell.execDetached(["xdg-open", selectedEvent.meetLink])
+                            if (closePopout) closePopout()
+                        } else if (selectedEvent && selectedEvent.htmlLink) {
+                            Quickshell.execDetached(["xdg-open", selectedEvent.htmlLink])
+                            if (closePopout) closePopout()
+                        }
+                        event.accepted = true
+                    }
+                    return
+                }
+
                 if (event.key === Qt.Key_H) {
                     shiftAnchor(-scopeDays); event.accepted = true
                 } else if (event.key === Qt.Key_L) {
                     shiftAnchor(scopeDays); event.accepted = true
-                } else if (event.key === Qt.Key_J) {
+                } else if (event.key === Qt.Key_J || event.key === Qt.Key_Tab) {
                     if (focusedIndex < focusables.length - 1) focusedIndex++
                     event.accepted = true
-                } else if (event.key === Qt.Key_K) {
+                } else if (event.key === Qt.Key_K || event.key === Qt.Key_Backtab) {
                     if (focusedIndex > 0) focusedIndex--
                     event.accepted = true
                 } else if (event.key === Qt.Key_Space
@@ -308,7 +378,14 @@ PluginComponent {
                 }
             }
 
-            Component.onCompleted: forceActiveFocus()
+            Component.onCompleted: {
+                forceActiveFocus()
+                // Auto-focus du prochain event du jour, s'il y en a un
+                Qt.callLater(function () {
+                    var idx = findFirstUpcomingTodayIndex()
+                    if (idx >= 0) focusedIndex = idx
+                })
+            }
 
             Timer {
                 interval: 60 * 1000
@@ -965,10 +1042,7 @@ PluginComponent {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            if (modelData.htmlLink) Quickshell.execDetached(["xdg-open", modelData.htmlLink])
-                                            if (popoutColumn.closePopout) popoutColumn.closePopout()
-                                        }
+                                        onClicked: popoutColumn.openEventDetails(modelData)
                                     }
                                 }
                             }
@@ -1128,10 +1202,7 @@ PluginComponent {
                                                     anchors.fill: parent
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
-                                                        if (tileRect.ev.htmlLink) Quickshell.execDetached(["xdg-open", tileRect.ev.htmlLink])
-                                                        if (popoutColumn.closePopout) popoutColumn.closePopout()
-                                                    }
+                                                    onClicked: popoutColumn.openEventDetails(tileRect.ev)
                                                 }
                                             }
                                         }
@@ -1407,6 +1478,281 @@ PluginComponent {
                                             cursorShape: Qt.PointingHandCursor
                                             onClicked: saveBtn.trigger()
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── DETAILS VIEW : détail d'un événement ──────────────
+                    Flickable {
+                        id: detailsView
+                        visible: popoutColumn.mode === "details" && popoutColumn.selectedEvent
+                        anchors.fill: parent
+                        anchors.topMargin: Theme.spacingS
+                        contentWidth: width
+                        contentHeight: detailsCol.implicitHeight
+                        clip: true
+
+                        property var ev: popoutColumn.selectedEvent || ({})
+                        property var evStart: ev.start ? new Date(ev.start) : null
+                        property var evEnd: ev.end ? new Date(ev.end) : evStart
+
+                        Column {
+                            id: detailsCol
+                            width: parent.width
+                            spacing: Theme.spacingM
+
+                            // Back row
+                            Row {
+                                spacing: Theme.spacingS
+                                StyledRect {
+                                    id: detailsBackBtn
+                                    width: 32; height: 32; radius: 16
+                                    color: backMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+                                    activeFocusOnTab: true
+                                    border.width: activeFocus ? 2 : 0
+                                    border.color: Theme.primary
+                                    Keys.onPressed: function (event) {
+                                        if (event.key === Qt.Key_Space
+                                            || event.key === Qt.Key_Return
+                                            || event.key === Qt.Key_Enter) {
+                                            popoutColumn.mode = "list"
+                                            event.accepted = true
+                                        }
+                                    }
+                                    DankIcon {
+                                        anchors.centerIn: parent
+                                        name: "arrow_back"
+                                        size: Theme.iconSize - 2
+                                        color: Theme.surfaceText
+                                    }
+                                    MouseArea {
+                                        id: backMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: popoutColumn.mode = "list"
+                                    }
+                                }
+                                StyledText {
+                                    text: detailsView.evStart
+                                        ? popoutColumn._fmtDayHeader(detailsView.evStart)
+                                        : ""
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    color: Theme.surfaceVariantText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            // Title
+                            StyledText {
+                                width: parent.width
+                                text: detailsView.ev.title || "(sans titre)"
+                                font.pixelSize: Theme.fontSizeLarge + 2
+                                font.weight: Font.Bold
+                                color: Theme.surfaceText
+                                wrapMode: Text.Wrap
+                            }
+
+                            // Calendar source chip
+                            Row {
+                                spacing: Theme.spacingXS
+                                visible: !!detailsView.ev.calendarSummary
+                                Rectangle {
+                                    width: 12; height: 12; radius: 6
+                                    color: detailsView.ev.calendarColor || Theme.primary
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledText {
+                                    text: detailsView.ev.calendarSummary || ""
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                    elide: Text.ElideRight
+                                    width: detailsCol.width - 20
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            // Time
+                            Row {
+                                spacing: Theme.spacingS
+                                DankIcon {
+                                    name: "schedule"
+                                    size: Theme.iconSize - 4
+                                    color: Theme.surfaceVariantText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledText {
+                                    text: {
+                                        if (detailsView.ev.allDay) return "Toute la journée"
+                                        if (!detailsView.evStart) return ""
+                                        return popoutColumn._fmtTime(detailsView.evStart)
+                                            + " – " + popoutColumn._fmtTime(detailsView.evEnd)
+                                    }
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    color: Theme.surfaceText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            // Location
+                            Row {
+                                spacing: Theme.spacingS
+                                visible: !!detailsView.ev.location
+                                DankIcon {
+                                    name: "place"
+                                    size: Theme.iconSize - 4
+                                    color: Theme.surfaceVariantText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledText {
+                                    text: detailsView.ev.location || ""
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    color: Theme.surfaceText
+                                    width: detailsCol.width - 32
+                                    wrapMode: Text.Wrap
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            // Meet button — gros et discoverable
+                            StyledRect {
+                                id: detailsMeetBtn
+                                visible: !!detailsView.ev.meetLink
+                                width: parent.width
+                                height: 48
+                                radius: Theme.cornerRadius
+                                color: meetMouse.containsMouse ? Qt.lighter(Theme.primary, 1.15) : Theme.primary
+                                activeFocusOnTab: visible
+                                border.width: activeFocus ? 2 : 0
+                                border.color: Theme.onPrimary
+                                Keys.onPressed: function (event) {
+                                    if (event.key === Qt.Key_Space
+                                        || event.key === Qt.Key_Return
+                                        || event.key === Qt.Key_Enter) {
+                                        if (detailsView.ev.meetLink) {
+                                            Quickshell.execDetached(["xdg-open", detailsView.ev.meetLink])
+                                            if (popoutColumn.closePopout) popoutColumn.closePopout()
+                                        }
+                                        event.accepted = true
+                                    }
+                                }
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: Theme.spacingS
+                                    DankIcon {
+                                        name: "videocam"
+                                        size: Theme.iconSize - 2
+                                        color: Theme.onPrimary
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    StyledText {
+                                        text: "Rejoindre Google Meet"
+                                        color: Theme.onPrimary
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Medium
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                                MouseArea {
+                                    id: meetMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (detailsView.ev.meetLink) {
+                                            Quickshell.execDetached(["xdg-open", detailsView.ev.meetLink])
+                                            if (popoutColumn.closePopout) popoutColumn.closePopout()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Attendees count chip
+                            Row {
+                                spacing: Theme.spacingS
+                                visible: detailsView.ev.attendees && detailsView.ev.attendees.length > 0
+                                DankIcon {
+                                    name: "group"
+                                    size: Theme.iconSize - 4
+                                    color: Theme.surfaceVariantText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledText {
+                                    text: {
+                                        var n = (detailsView.ev.attendees || []).length
+                                        var acc = 0
+                                        var dec = 0
+                                        for (var i = 0; i < n; ++i) {
+                                            var s = detailsView.ev.attendees[i].responseStatus
+                                            if (s === "accepted") acc++
+                                            else if (s === "declined") dec++
+                                        }
+                                        return n + " participant" + (n > 1 ? "s" : "")
+                                            + "  ·  " + acc + " ✓  " + dec + " ✗"
+                                    }
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            // Description (HTML possible — affiché en text brut)
+                            StyledText {
+                                visible: !!detailsView.ev.description
+                                width: parent.width
+                                text: (detailsView.ev.description || "").replace(/<[^>]+>/g, "").trim()
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceText
+                                wrapMode: Text.Wrap
+                                topPadding: Theme.spacingS
+                            }
+
+                            // Open in Google Calendar
+                            StyledRect {
+                                id: detailsOpenBtn
+                                visible: !!detailsView.ev.htmlLink
+                                width: parent.width
+                                height: 40
+                                radius: Theme.cornerRadius
+                                color: openMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+                                activeFocusOnTab: visible
+                                border.width: activeFocus ? 2 : 0
+                                border.color: Theme.primary
+                                Keys.onPressed: function (event) {
+                                    if (event.key === Qt.Key_Space
+                                        || event.key === Qt.Key_Return
+                                        || event.key === Qt.Key_Enter) {
+                                        Quickshell.execDetached(["xdg-open", detailsView.ev.htmlLink])
+                                        if (popoutColumn.closePopout) popoutColumn.closePopout()
+                                        event.accepted = true
+                                    }
+                                }
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: Theme.spacingS
+                                    DankIcon {
+                                        name: "open_in_new"
+                                        size: Theme.iconSize - 4
+                                        color: Theme.surfaceText
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    StyledText {
+                                        text: "Ouvrir dans Google Calendar"
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                                MouseArea {
+                                    id: openMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        Quickshell.execDetached(["xdg-open", detailsView.ev.htmlLink])
+                                        if (popoutColumn.closePopout) popoutColumn.closePopout()
                                     }
                                 }
                             }

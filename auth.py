@@ -465,16 +465,42 @@ def cmd_fetch() -> int:
             for it in data.get("items", []):
                 start = it.get("start", {})
                 end = it.get("end", {})
+
+                # Extract Google Meet link from conferenceData ou hangoutLink (legacy)
+                meet_link = ""
+                cdata = it.get("conferenceData") or {}
+                for ep in cdata.get("entryPoints") or []:
+                    if ep.get("entryPointType") == "video" and ep.get("uri"):
+                        meet_link = ep["uri"]
+                        break
+                if not meet_link:
+                    meet_link = it.get("hangoutLink") or ""
+
+                attendees = []
+                for a in it.get("attendees") or []:
+                    attendees.append(
+                        {
+                            "email": a.get("email", ""),
+                            "displayName": a.get("displayName", ""),
+                            "responseStatus": a.get("responseStatus", ""),
+                            "self": a.get("self", False),
+                            "organizer": a.get("organizer", False),
+                        }
+                    )
+
                 all_events.append(
                     {
-                        # Composite ID across account+event to avoid collisions
                         "id": f"{account.get('email','')}|{it.get('id','')}",
                         "title": it.get("summary", "(sans titre)"),
+                        "description": it.get("description", ""),
                         "location": it.get("location", ""),
                         "htmlLink": it.get("htmlLink", ""),
                         "start": start.get("dateTime") or start.get("date"),
                         "end": end.get("dateTime") or end.get("date"),
                         "allDay": "date" in start and "dateTime" not in start,
+                        "meetLink": meet_link,
+                        "attendees": attendees,
+                        "organizer": (it.get("organizer") or {}).get("email", ""),
                         "calendarId": cal["id"],
                         "calendarSummary": cal.get("summary", ""),
                         "calendarColor": cal.get("backgroundColor", ""),
