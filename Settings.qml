@@ -6,6 +6,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
+import "i18n.js" as I18n
 
 PluginSettings {
     id: root
@@ -13,6 +14,9 @@ PluginSettings {
 
     property bool authBusy: false
     property var accounts: []
+
+    readonly property string locale: Qt.locale().name.startsWith("fr") ? "fr" : "en"
+    function tr(key, params) { return I18n.tr(locale, key, params) }
 
     readonly property string pluginDir: Quickshell.env("HOME") + "/.config/DankMaterialShell/plugins/googleCalendar"
     readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/DankMaterialShell/plugins/googleCalendar"
@@ -51,11 +55,11 @@ PluginSettings {
             onExited: function(code) {
                 root.authBusy = false
                 if (code === 0) {
-                    ToastService.showInfo("Compte ajouté")
+                    ToastService.showInfo(root.tr("toast_account_added"))
                     accountsFile.reload()
                     root.runFetch()
                 } else {
-                    ToastService.showError("Échec de la connexion (code " + code + ")")
+                    ToastService.showError(root.tr("toast_login_failed", { code: code }))
                 }
                 destroy()
             }
@@ -68,7 +72,7 @@ PluginSettings {
             property string email: ""
             command: ["python3", root.pluginDir + "/auth.py", "logout", email]
             onExited: function(code) {
-                ToastService.showInfo("Compte retiré")
+                ToastService.showInfo(root.tr("toast_account_removed"))
                 accountsFile.reload()
                 root.runFetch()
                 destroy()
@@ -82,10 +86,10 @@ PluginSettings {
             command: ["python3", root.pluginDir + "/auth.py", "list-calendars"]
             onExited: function(code) {
                 if (code === 0) {
-                    ToastService.showInfo("Liste des calendriers rafraîchie")
+                    ToastService.showInfo(root.tr("toast_calendars_refreshed"))
                     accountsFile.reload()
                 } else {
-                    ToastService.showError("Échec du rafraîchissement (code " + code + ")")
+                    ToastService.showError(root.tr("toast_refresh_failed", { code: code }))
                 }
                 destroy()
             }
@@ -133,7 +137,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Google Calendar"
+        text: root.tr("google_calendar")
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.Bold
         color: Theme.surfaceText
@@ -141,7 +145,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Multi-compte. Connecte plusieurs comptes Google et active les calendriers de chacun individuellement."
+        text: root.tr("settings_subtitle")
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -164,14 +168,16 @@ PluginSettings {
                 width: parent.width
                 spacing: Theme.spacingM
                 StyledText {
-                    text: "Comptes Google"
+                    text: root.tr("settings_accounts")
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.Medium
                     color: Theme.surfaceText
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 StyledText {
-                    text: root.accounts.length + " compte" + (root.accounts.length > 1 ? "s" : "")
+                    text: root.accounts.length === 1
+                        ? root.tr("settings_account_count_one")
+                        : root.tr("settings_account_count_many", { n: root.accounts.length })
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     anchors.verticalCenter: parent.verticalCenter
@@ -180,7 +186,7 @@ PluginSettings {
 
             StyledText {
                 visible: root.accounts.length === 0
-                text: "Aucun compte connecté. Renseigne d'abord client_id et secret OAuth ci-dessous, puis clique « + Connecter un compte »."
+                text: root.tr("settings_no_accounts_help")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
                 wrapMode: Text.WordWrap
@@ -226,14 +232,14 @@ PluginSettings {
                                 elide: Text.ElideRight
                             }
                             Button {
-                                text: "Retirer"
+                                text: root.tr("settings_remove")
                                 anchors.verticalCenter: parent.verticalCenter
                                 onClicked: root.runLogout(accountData.email)
                             }
                         }
 
                         StyledText {
-                            text: "Calendriers"
+                            text: root.tr("settings_calendars")
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
                             topPadding: Theme.spacingS
@@ -275,7 +281,7 @@ PluginSettings {
                                         visible: !!calData.backgroundColor
                                     }
                                     StyledText {
-                                        text: (calData.summary || calData.id) + (calData.primary ? "  (primary)" : "")
+                                        text: (calData.summary || calData.id) + (calData.primary ? "  " + root.tr("settings_primary") : "")
                                         font.pixelSize: Theme.fontSizeSmall
                                         color: Theme.surfaceText
                                         anchors.verticalCenter: parent.verticalCenter
@@ -298,13 +304,13 @@ PluginSettings {
                 spacing: Theme.spacingM
 
                 Button {
-                    text: root.authBusy ? "En attente du navigateur…" : "+ Connecter un compte"
+                    text: root.authBusy ? root.tr("settings_add_account_busy") : root.tr("settings_add_account")
                     enabled: !root.authBusy
                     onClicked: root.runAddAccount()
                 }
 
                 Button {
-                    text: "Rafraîchir les calendriers"
+                    text: root.tr("settings_refresh_calendars")
                     enabled: root.accounts.length > 0
                     onClicked: root.runListCalendars()
                 }
@@ -326,14 +332,14 @@ PluginSettings {
             spacing: Theme.spacingM
 
             StyledText {
-                text: "OAuth Client (Google Cloud)"
+                text: root.tr("settings_oauth_section")
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
                 color: Theme.surfaceText
             }
 
             StyledText {
-                text: "Un seul OAuth Client suffit pour plusieurs comptes Google. Crée un client « Desktop app » dans Google Cloud Console (voir README). Tous les comptes que tu ajoutes doivent figurer en « Test users » de cet écran de consentement."
+                text: root.tr("settings_oauth_help")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
                 wrapMode: Text.WordWrap
@@ -342,14 +348,14 @@ PluginSettings {
 
             StringSetting {
                 settingKey: "clientId"
-                label: "Client ID"
+                label: root.tr("settings_clientid_label")
                 placeholder: "xxxxx.apps.googleusercontent.com"
                 defaultValue: ""
             }
 
             StringSetting {
                 settingKey: "clientSecret"
-                label: "Client Secret"
+                label: root.tr("settings_clientsecret_label")
                 placeholder: "GOCSPX-…"
                 defaultValue: ""
             }
@@ -370,7 +376,7 @@ PluginSettings {
             spacing: Theme.spacingM
 
             StyledText {
-                text: "Affichage"
+                text: root.tr("settings_display")
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
                 color: Theme.surfaceText
@@ -378,8 +384,8 @@ PluginSettings {
 
             StringSetting {
                 settingKey: "refreshMinutes"
-                label: "Intervalle de rafraîchissement (min)"
-                description: "Toutes les N minutes, on re-requête l'API Google pour tous les calendriers activés"
+                label: root.tr("settings_refresh_min_label")
+                description: root.tr("settings_refresh_min_desc")
                 placeholder: "5"
                 defaultValue: "5"
             }
@@ -400,7 +406,7 @@ PluginSettings {
             spacing: Theme.spacingM
 
             StyledText {
-                text: "Notifications"
+                text: root.tr("settings_notif_section")
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
                 color: Theme.surfaceText
@@ -408,8 +414,8 @@ PluginSettings {
 
             ToggleSetting {
                 settingKey: "notifications"
-                label: "Rappels d'événement"
-                description: "Notifications 15 min, 5 min et à l'heure de chaque event, avec actions Snooze 5 min / Stop"
+                label: root.tr("settings_notif_toggle")
+                description: root.tr("settings_notif_desc")
                 defaultValue: true
             }
         }

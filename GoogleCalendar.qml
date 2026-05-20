@@ -5,6 +5,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
+import "i18n.js" as I18n
 
 // Plugin Google Calendar : pill dans la barre + popout multi-vues.
 // Voir PopoutMain.qml pour la UI principale.
@@ -26,6 +27,10 @@ PluginComponent {
     readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/DankMaterialShell/plugins/googleCalendar"
     readonly property string eventsPath: stateDir + "/events.json"
     readonly property string accountsPath: stateDir + "/accounts.json"
+
+    // i18n — détectée par PopoutMain aussi, mais utile ici pour les toasts
+    readonly property string locale: Qt.locale().name.startsWith("fr") ? "fr" : "en"
+    function tr(key, params) { return I18n.tr(locale, key, params) }
 
     // ── Indicateur visuel sur la pill : nombre d'events restants today ────
     readonly property int upcomingTodayCount: {
@@ -87,7 +92,7 @@ PluginComponent {
         Process {
             command: ["python3", root.pluginDir + "/auth.py", "fetch"]
             onExited: function(code) {
-                if (code !== 0) ToastService.showWarning("Google Calendar: échec du fetch (code " + code + ")")
+                if (code !== 0) ToastService.showWarning(root.tr("toast_fetch_fail", { code: code }))
                 destroy()
             }
         }
@@ -100,11 +105,11 @@ PluginComponent {
             command: ["sh", "-c", scriptStr]
             onExited: function(code) {
                 if (code === 0) {
-                    ToastService.showInfo("Événement créé ✓")
+                    ToastService.showInfo(root.tr("toast_event_created"))
                     root.refreshEvents()
                     root.eventCreated()
                 } else {
-                    ToastService.showError("Google Calendar: échec de création (code " + code + ")")
+                    ToastService.showError(root.tr("toast_create_fail", { code: code }))
                 }
                 destroy()
             }
@@ -132,7 +137,7 @@ PluginComponent {
 
     pillRightClickAction: function () {
         root.refreshEvents()
-        ToastService.showInfo("Google Calendar: rafraîchissement…")
+        ToastService.showInfo(root.tr("toast_refresh"))
     }
 
     // ── Pill (icône seule, couleur primary si event today à venir) ────────

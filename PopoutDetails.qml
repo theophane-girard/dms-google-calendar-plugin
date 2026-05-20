@@ -71,7 +71,7 @@ Flickable {
         // Title
         StyledText {
             width: parent.width
-            text: root.ev.title || "(sans titre)"
+            text: root.ev.title || popout.tr("no_title")
             font.pixelSize: Theme.fontSizeLarge + 2
             font.weight: Font.Bold
             color: Theme.surfaceText
@@ -108,7 +108,7 @@ Flickable {
             }
             StyledText {
                 text: {
-                    if (root.ev.allDay) return "Toute la journée"
+                    if (root.ev.allDay) return popout.tr("all_day")
                     if (!root.evStart) return ""
                     return popout._fmtTime(root.evStart) + " – " + popout._fmtTime(root.evEnd)
                 }
@@ -170,7 +170,7 @@ Flickable {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 StyledText {
-                    text: "Rejoindre Google Meet"
+                    text: popout.tr("details_meet")
                     color: Theme.onPrimary
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.Medium
@@ -211,8 +211,10 @@ Flickable {
                         if (s === "accepted") acc++
                         else if (s === "declined") dec++
                     }
-                    return n + " participant" + (n > 1 ? "s" : "")
-                        + "  ·  " + acc + " ✓  " + dec + " ✗"
+                    var label = n === 1
+                        ? popout.tr("details_attendees_one")
+                        : popout.tr("details_attendees_many", { n: n })
+                    return label + "  ·  " + acc + " ✓  " + dec + " ✗"
                 }
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
@@ -261,7 +263,7 @@ Flickable {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 StyledText {
-                    text: "Ouvrir dans Google Calendar"
+                    text: popout.tr("details_open_gcal")
                     color: Theme.surfaceText
                     font.pixelSize: Theme.fontSizeSmall
                     anchors.verticalCenter: parent.verticalCenter

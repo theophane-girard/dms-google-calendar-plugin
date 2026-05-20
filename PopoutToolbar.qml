@@ -60,7 +60,7 @@ Item {
             StyledText {
                 id: todayLabel
                 anchors.centerIn: parent
-                text: "Aujourd'hui"
+                text: popout.tr("today")
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
                 color: popout.viewIncludesToday ? Theme.onPrimary : Theme.surfaceText
@@ -178,7 +178,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                     popout.plugin.refreshEvents()
-                    ToastService.showInfo("Google Calendar: rafraîchissement…")
+                    ToastService.showInfo(popout.tr("toast_refresh"))
                     refreshSpin.start()
                 }
             }

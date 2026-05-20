@@ -51,6 +51,50 @@ SCOPES = [
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".config" / "DankMaterialShell"
+
+
+# ── i18n (notifications) ────────────────────────────────────────────────────
+
+
+def _detect_locale() -> str:
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        v = os.environ.get(var, "")
+        if v.startswith("fr"):
+            return "fr"
+        if v.startswith("en"):
+            return "en"
+    return "en"
+
+
+_LOCALE = _detect_locale()
+
+_STRINGS = {
+    "fr": {
+        "in_min": "dans {n} min",
+        "now": "maintenant",
+        "ago_min": "il y a {n} min",
+        "snooze_action": "Snooze 5 min",
+        "stop_action": "Stop",
+        "no_title": "(sans titre)",
+    },
+    "en": {
+        "in_min": "in {n} min",
+        "now": "now",
+        "ago_min": "{n} min ago",
+        "snooze_action": "Snooze 5 min",
+        "stop_action": "Stop",
+        "no_title": "(untitled)",
+    },
+}
+
+
+def _tr(key: str, **kwargs) -> str:
+    s = (_STRINGS.get(_LOCALE, {}).get(key)
+         or _STRINGS["en"].get(key)
+         or key)
+    for k, v in kwargs.items():
+        s = s.replace("{" + k + "}", str(v))
+    return s
 STATE_DIR = (
     Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     / "DankMaterialShell"
@@ -656,12 +700,12 @@ def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
         end_ts = _parse_iso(ev.get("end")) or start_ts
         delta_min = round((start_ts - time.time()) / 60)
         if delta_min > 0:
-            when_text = f"dans {delta_min} min"
+            when_text = _tr("in_min", n=delta_min)
         elif delta_min == 0:
-            when_text = "maintenant"
+            when_text = _tr("now")
         else:
-            when_text = f"il y a {-delta_min} min"
-        title = ev.get("title") or "(sans titre)"
+            when_text = _tr("ago_min", n=-delta_min)
+        title = ev.get("title") or _tr("no_title")
         summary = f"{title} — {when_text}"
         body_lines = [f"{_fmt_hhmm(start_ts)} – {_fmt_hhmm(end_ts)}"]
         if ev.get("calendarSummary"):
@@ -677,8 +721,8 @@ def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
                     "--app-name=Google Calendar",
                     f"--icon={_ensure_icon()}",
                     "--urgency=normal",
-                    "--action=snooze=Snooze 5 min",
-                    "--action=stop=Stop",
+                    f"--action=snooze={_tr('snooze_action')}",
+                    f"--action=stop={_tr('stop_action')}",
                     summary,
                     body,
                 ],

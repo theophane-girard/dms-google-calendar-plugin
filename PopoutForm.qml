@@ -24,7 +24,7 @@ Flickable {
             width: parent.width
             spacing: 4
             StyledText {
-                text: "Titre *"
+                text: popout.tr("form_title_label")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -32,7 +32,7 @@ Flickable {
                 id: formTitle
                 width: parent.width
                 height: 36
-                placeholderText: "Réunion équipe…"
+                placeholderText: popout.tr("form_title_placeholder")
                 text: ""
             }
         }
@@ -42,7 +42,7 @@ Flickable {
             width: parent.width
             spacing: 4
             StyledText {
-                text: "Date (AAAA-MM-JJ)"
+                text: popout.tr("form_date_label")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -50,7 +50,7 @@ Flickable {
                 id: formDate
                 width: parent.width
                 height: 36
-                placeholderText: "2026-05-19"
+                placeholderText: popout.tr("form_date_placeholder")
                 text: popout._formatDate(popout.anchorDate)
             }
         }
@@ -94,7 +94,7 @@ Flickable {
                     }
                 }
                 StyledText {
-                    text: "Toute la journée"
+                    text: popout.tr("form_all_day")
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceText
                     anchors.verticalCenter: parent.verticalCenter
@@ -117,7 +117,7 @@ Flickable {
                 width: (parent.width - parent.spacing) / 2
                 spacing: 4
                 StyledText {
-                    text: "Début (HH:MM)"
+                    text: popout.tr("form_start_label")
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
@@ -133,7 +133,7 @@ Flickable {
                 width: (parent.width - parent.spacing) / 2
                 spacing: 4
                 StyledText {
-                    text: "Fin (HH:MM)"
+                    text: popout.tr("form_end_label")
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
@@ -152,7 +152,7 @@ Flickable {
             width: parent.width
             spacing: 4
             StyledText {
-                text: "Lieu (optionnel)"
+                text: popout.tr("form_location_label")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -160,7 +160,7 @@ Flickable {
                 id: formLocation
                 width: parent.width
                 height: 36
-                placeholderText: "Salle de réunion, adresse…"
+                placeholderText: popout.tr("form_location_placeholder")
                 text: ""
             }
         }
@@ -191,7 +191,7 @@ Flickable {
                     }
                     StyledText {
                         anchors.centerIn: parent
-                        text: "Annuler"
+                        text: popout.tr("form_cancel")
                         color: Theme.surfaceText
                         font.pixelSize: Theme.fontSizeSmall
                     }
@@ -228,7 +228,7 @@ Flickable {
                     }
                     StyledText {
                         anchors.centerIn: parent
-                        text: "Créer"
+                        text: popout.tr("form_create")
                         color: Theme.onPrimary
                         font.pixelSize: Theme.fontSizeSmall
                         font.weight: Font.Medium

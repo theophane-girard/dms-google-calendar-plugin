@@ -130,7 +130,7 @@ DankListView {
         // Placeholder pour jour vide
         StyledText {
             visible: dayDelegate.totalCount === 0
-            text: "Rien de prévu"
+            text: popout.tr("nothing_scheduled")
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
             opacity: 0.7
@@ -168,7 +168,7 @@ DankListView {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     StyledText {
-                        text: modelData.title || "(sans titre)"
+                        text: modelData.title || popout.tr("no_title")
                         font.pixelSize: Theme.fontSizeSmall
                         font.weight: Font.Medium
                         color: Theme.onPrimary
@@ -308,7 +308,7 @@ DankListView {
                                 StyledText {
                                     width: parent.width
                                     visible: tileRect.height < 40
-                                    text: popout._fmtTime(tileRect.evStart) + "  " + (tileRect.ev.title || "(sans titre)")
+                                    text: popout._fmtTime(tileRect.evStart) + "  " + (tileRect.ev.title || popout.tr("no_title"))
                                     font.pixelSize: Theme.fontSizeSmall - 1
                                     font.weight: Font.Medium
                                     color: Theme.surfaceText
@@ -325,7 +325,7 @@ DankListView {
                                 StyledText {
                                     width: parent.width
                                     visible: tileRect.height >= 40
-                                    text: tileRect.ev.title || "(sans titre)"
+                                    text: tileRect.ev.title || popout.tr("no_title")
                                     font.pixelSize: tileRect.height < 56 ? Theme.fontSizeSmall : Theme.fontSizeMedium
                                     font.weight: Font.Medium
                                     color: Theme.surfaceText

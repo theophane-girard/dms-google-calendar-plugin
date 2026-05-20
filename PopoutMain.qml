@@ -3,6 +3,7 @@ import Quickshell
 import qs.Common
 import qs.Services
 import qs.Widgets
+import "i18n.js" as I18n
 
 // Conteneur racine du popout : état + clavier + layout (header/toolbar/body).
 // Reçoit `plugin` (le PluginComponent racine) pour accéder à events / refresh
@@ -18,6 +19,10 @@ FocusScope {
     implicitHeight: bodyColumn.implicitHeight
 
     focus: true
+
+    // ── i18n ───────────────────────────────────────────────────────────────
+    readonly property string locale: Qt.locale().name.startsWith("fr") ? "fr" : "en"
+    function tr(key, params) { return I18n.tr(locale, key, params) }
 
     // ── State ──────────────────────────────────────────────────────────────
     property var anchorDate: { var d = new Date(); d.setHours(0, 0, 0, 0); return d }
@@ -241,12 +246,11 @@ FocusScope {
         var now = new Date()
         var tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1)
         var yesterday = new Date(now); yesterday.setDate(now.getDate() - 1)
-        if (_sameDay(d, now)) return "Aujourd'hui"
-        if (_sameDay(d, tomorrow)) return "Demain"
-        if (_sameDay(d, yesterday)) return "Hier"
-        var days = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]
-        var months = ["janv.", "févr.", "mars", "avr.", "mai", "juin",
-                      "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+        if (_sameDay(d, now)) return tr("today")
+        if (_sameDay(d, tomorrow)) return tr("tomorrow")
+        if (_sameDay(d, yesterday)) return tr("yesterday")
+        var days = I18n.days(locale)
+        var months = I18n.months(locale)
         return days[d.getDay()] + " " + d.getDate() + " " + months[d.getMonth()]
     }
 
@@ -281,9 +285,9 @@ FocusScope {
         endT = (endT || "").trim()
         location = (location || "").trim()
 
-        if (!title) { ToastService.showWarning("Titre requis"); return }
+        if (!title) { ToastService.showWarning(tr("toast_title_required")); return }
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date).getTime())) {
-            ToastService.showWarning("Date invalide (AAAA-MM-JJ)")
+            ToastService.showWarning(tr("toast_invalid_date"))
             return
         }
 
@@ -297,7 +301,7 @@ FocusScope {
             payload.end = { date: _formatDate(next) }
         } else {
             if (!/^\d{1,2}:\d{2}$/.test(startT) || !/^\d{1,2}:\d{2}$/.test(endT)) {
-                ToastService.showWarning("Heures invalides (HH:MM)")
+                ToastService.showWarning(tr("toast_invalid_time"))
                 return
             }
             if (startT.length === 4) startT = "0" + startT
@@ -437,7 +441,7 @@ FocusScope {
                 anchors.left: parent.left
                 anchors.leftMargin: Theme.spacingS
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Google Calendar"
+                text: tr("google_calendar")
                 font.pixelSize: Theme.fontSizeLarge + 4
                 font.weight: Font.Bold
                 color: Theme.surfaceText
@@ -449,7 +453,7 @@ FocusScope {
                 spacing: Theme.spacingXS
 
                 StyledText {
-                    text: "h/l ◀▶  j/k ↕  ⏎ activer"
+                    text: tr("keyboard_hint")
                     font.pixelSize: Theme.fontSizeSmall - 1
                     color: Theme.surfaceVariantText
                     anchors.verticalCenter: parent.verticalCenter
@@ -491,7 +495,7 @@ FocusScope {
                 visible: popoutMain.mode === "list" && plugin && !plugin.authenticated
                 anchors.centerIn: parent
                 horizontalAlignment: Text.AlignHCenter
-                text: "Compte non connecté.\nOuvre les réglages → Se connecter."
+                text: tr("not_authenticated")
                 font.pixelSize: Theme.fontSizeLarge
                 color: Theme.surfaceVariantText
             }
