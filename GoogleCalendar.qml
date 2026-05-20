@@ -21,7 +21,7 @@ PluginComponent {
     readonly property string pluginDir: Quickshell.env("HOME") + "/.config/DankMaterialShell/plugins/googleCalendar"
     readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/DankMaterialShell/plugins/googleCalendar"
     readonly property string eventsPath: stateDir + "/events.json"
-    readonly property string tokensPath: stateDir + "/tokens.json"
+    readonly property string accountsPath: stateDir + "/accounts.json"
 
     readonly property int upcomingTodayCount: {
         var now = new Date()
@@ -56,11 +56,12 @@ PluginComponent {
     }
 
     FileView {
-        id: tokensFile
-        path: root.tokensPath
+        id: accountsFile
+        path: root.accountsPath
         watchChanges: true
         onFileChanged: reload()
         onLoaded: {
+            // Authentifié si au moins un compte a un refresh_token
             root.authenticated = (text() || "").indexOf("refresh_token") !== -1
         }
         onLoadFailed: root.authenticated = false
@@ -125,7 +126,7 @@ PluginComponent {
 
     Component.onCompleted: {
         eventsFile.reload()
-        tokensFile.reload()
+        accountsFile.reload()
     }
 
     pillRightClickAction: function () {
@@ -333,6 +334,20 @@ PluginComponent {
                     && a.getDate() === b.getDate()
             }
 
+            function _fmtSourceLabel(s) {
+                if (!s) return ""
+                s = s.toString().trim()
+                var m
+                if ((m = s.match(/^https?:\/\/([^\/]+)/))) {
+                    return m[1].replace(/^www\./, "")
+                }
+                if ((m = s.match(/^([^@\s]+)@/))) {
+                    if (m[1].length <= 24) return m[1]
+                }
+                if (s.length > 20) return s.substring(0, 18) + "…"
+                return s
+            }
+
             function _formatDate(d) {
                 return d.getFullYear() + "-"
                      + (d.getMonth() + 1).toString().padStart(2, "0") + "-"
@@ -495,18 +510,31 @@ PluginComponent {
                 var days = []
                 for (var i = 0; i < popoutColumn.scopeDays; ++i) {
                     var d = new Date(popoutColumn.anchorDate)
+                    d.setHours(0, 0, 0, 0)
                     d.setDate(d.getDate() + i)
                     days.push({ date: d, allDay: [], timed: [] })
                 }
                 for (var j = 0; j < root.events.length; ++j) {
                     var ev = root.events[j]
                     if (!ev.start) continue
-                    var s = new Date(ev.start)
-                    for (var k = 0; k < days.length; ++k) {
-                        if (popoutColumn._sameDay(s, days[k].date)) {
-                            if (ev.allDay) days[k].allDay.push(ev)
-                            else days[k].timed.push(ev)
-                            break
+                    if (ev.allDay) {
+                        // Google all-day : start inclusif, end exclusif
+                        var sAll = new Date(ev.start); sAll.setHours(0, 0, 0, 0)
+                        var eAll = ev.end ? new Date(ev.end) : new Date(sAll.getTime() + 86400000)
+                        eAll.setHours(0, 0, 0, 0)
+                        for (var k = 0; k < days.length; ++k) {
+                            if (days[k].date.getTime() >= sAll.getTime()
+                                && days[k].date.getTime() < eAll.getTime()) {
+                                days[k].allDay.push(ev)
+                            }
+                        }
+                    } else {
+                        var sT = new Date(ev.start)
+                        for (var kt = 0; kt < days.length; ++kt) {
+                            if (popoutColumn._sameDay(sT, days[kt].date)) {
+                                days[kt].timed.push(ev)
+                                break
+                            }
                         }
                     }
                 }
@@ -804,21 +832,17 @@ PluginComponent {
                     height: root.popoutHeight - header.height - toolbar.height - Theme.spacingM
 
                     StyledText {
-                        visible: popoutColumn.mode === "list"
-                                 && (!root.authenticated || popoutColumn.totalVisibleEvents === 0)
+                        visible: popoutColumn.mode === "list" && !root.authenticated
                         anchors.centerIn: parent
                         horizontalAlignment: Text.AlignHCenter
-                        text: !root.authenticated
-                            ? "Compte non connecté.\nOuvre les réglages → Se connecter."
-                            : "Rien de prévu sur cette période 🌴"
+                        text: "Compte non connecté.\nOuvre les réglages → Se connecter."
                         font.pixelSize: Theme.fontSizeLarge
                         color: Theme.surfaceVariantText
                     }
 
                     DankListView {
                         id: dayList
-                        visible: popoutColumn.mode === "list"
-                                 && root.authenticated && popoutColumn.totalVisibleEvents > 0
+                        visible: popoutColumn.mode === "list" && root.authenticated
                         anchors.fill: parent
                         anchors.topMargin: Theme.spacingS
                         clip: true
@@ -871,6 +895,18 @@ PluginComponent {
                                 }
                             }
 
+                            // Placeholder pour jour vide
+                            StyledText {
+                                visible: dayDelegate.totalCount === 0
+                                text: "Rien de prévu"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                opacity: 0.7
+                                leftPadding: Theme.spacingS
+                                topPadding: Theme.spacingXS
+                                bottomPadding: Theme.spacingXS
+                            }
+
                             // All-day banners
                             Repeater {
                                 model: dayDelegate.dayInfo.allDay
@@ -907,6 +943,21 @@ PluginComponent {
                                             elide: Text.ElideRight
                                             anchors.verticalCenter: parent.verticalCenter
                                         }
+                                    }
+
+                                    // Hint provenance pour all-day
+                                    StyledText {
+                                        visible: !!modelData.calendarSummary
+                                        text: popoutColumn._fmtSourceLabel(modelData.calendarSummary)
+                                        color: Theme.onPrimary
+                                        opacity: 0.65
+                                        font.pixelSize: Theme.fontSizeSmall - 2
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.rightMargin: Theme.spacingS
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignRight
+                                        width: Math.min(implicitWidth, parent.width * 0.3)
                                     }
 
                                     MouseArea {
@@ -995,15 +1046,34 @@ PluginComponent {
                                                     color: {
                                                         if (tileRect.evState === "ongoing") return Theme.error
                                                         if (tileRect.evState === "past") return Theme.surfaceVariantText
+                                                        if (tileRect.ev.calendarColor) return tileRect.ev.calendarColor
                                                         return Theme.primary
                                                     }
+                                                }
+
+                                                // Hint provenance — coin haut-droit, discret
+                                                StyledText {
+                                                    id: tileHint
+                                                    visible: tileRect.height >= 30 && tileRect.ev.calendarSummary
+                                                    text: popoutColumn._fmtSourceLabel(tileRect.ev.calendarSummary)
+                                                    color: tileRect.ev.calendarColor || Theme.surfaceVariantText
+                                                    opacity: 0.75
+                                                    font.pixelSize: Theme.fontSizeSmall - 2
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.rightMargin: 6
+                                                    anchors.topMargin: 4
+                                                    elide: Text.ElideRight
+                                                    horizontalAlignment: Text.AlignRight
+                                                    width: Math.min(implicitWidth, tileRect.width * 0.4)
+                                                    z: 2
                                                 }
 
                                                 Column {
                                                     anchors.left: tileAccent.right
                                                     anchors.leftMargin: Theme.spacingXS
-                                                    anchors.right: parent.right
-                                                    anchors.rightMargin: Theme.spacingXS
+                                                    anchors.right: tileHint.visible ? tileHint.left : parent.right
+                                                    anchors.rightMargin: tileHint.visible ? Theme.spacingXS : Theme.spacingXS
                                                     anchors.top: parent.top
                                                     anchors.topMargin: tileRect.height < 40 ? 2 : 4
                                                     spacing: 0

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Google Calendar OAuth helper for DankMaterialShell plugin.
 
-Subcommands:
-  login    Open browser, run OAuth loopback flow, save tokens.
-  fetch    Refresh token if needed, fetch events, write events.json.
-  status   Print 'authenticated' / 'not_authenticated' (+ email if known).
-  logout   Delete saved tokens.
+Multi-account / multi-calendar support.
 
-Config is read from plugin_settings.json (DMS) and from a small JSON in the
-state dir. Tokens never leave the user's machine.
+Subcommands:
+  login           Start OAuth loopback flow ; add (or update) an account.
+  fetch           Refresh tokens, fetch events from all enabled calendars,
+                  write merged events.json.
+  list-calendars  Refresh the calendar list for an account (or all).
+  toggle-calendar Toggle the enabled flag of a calendar (args: email calId).
+  create          Read event JSON from stdin and POST to the chosen calendar.
+  status          List all connected accounts.
+  logout          Disconnect an account (arg: email) or all accounts.
+  daemon          Background process that fires checkpoint notifications.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -36,12 +41,15 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 EVENTS_URL_TMPL = "https://www.googleapis.com/calendar/v3/calendars/{cal}/events"
+CALLIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
     "openid",
     "email",
 ]
 
+PLUGIN_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".config" / "DankMaterialShell"
 STATE_DIR = (
     Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
@@ -49,9 +57,55 @@ STATE_DIR = (
     / "plugins"
     / PLUGIN_ID
 )
-TOKENS_PATH = STATE_DIR / "tokens.json"
+TOKENS_PATH = STATE_DIR / "tokens.json"  # legacy, kept for migration
+ACCOUNTS_PATH = STATE_DIR / "accounts.json"
 EVENTS_PATH = STATE_DIR / "events.json"
 PLUGIN_SETTINGS_PATH = CONFIG_DIR / "plugin_settings.json"
+
+
+# ── Theme icon ──────────────────────────────────────────────────────────────
+
+
+def _get_theme_primary_hex() -> str:
+    candidates = [
+        Path.home() / ".config" / "hypr" / "dms" / "colors.conf",
+        Path.home() / ".config" / "niri" / "dms" / "colors.conf",
+    ]
+    for p in candidates:
+        try:
+            text = p.read_text()
+        except (FileNotFoundError, OSError):
+            continue
+        m = re.search(r"\$primary\s*=\s*rgb\(([0-9a-fA-F]{6})\)", text)
+        if m:
+            return "#" + m.group(1).lower()
+    return "#1a73e8"
+
+
+def _ensure_icon() -> Path:
+    color = _get_theme_primary_hex()
+    suffix = color.lstrip("#")
+    icon_path = PLUGIN_DIR / f"icon-{suffix}.svg"
+    if not icon_path.exists():
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 40 40" '
+            'width="256" height="256">\n'
+            f'  <path fill="{color}" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9'
+            "-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 "
+            "16H5V10h14v10zm0-12H5V6h14v2zm-7 5h5v5h-5z\"/>\n"
+            "</svg>\n"
+        )
+        icon_path.write_text(svg)
+        for old in PLUGIN_DIR.glob("icon-*.svg"):
+            if old != icon_path:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+    return icon_path
+
+
+# ── Settings / accounts storage ─────────────────────────────────────────────
 
 
 def _load_plugin_settings() -> dict[str, Any]:
@@ -64,19 +118,54 @@ def _load_plugin_settings() -> dict[str, Any]:
     return data.get(PLUGIN_ID, {}) or {}
 
 
-def _read_tokens() -> dict[str, Any]:
-    if not TOKENS_PATH.exists():
-        return {}
-    try:
-        return json.loads(TOKENS_PATH.read_text())
-    except json.JSONDecodeError:
-        return {}
+def _load_accounts() -> list[dict[str, Any]]:
+    if ACCOUNTS_PATH.exists():
+        try:
+            data = json.loads(ACCOUNTS_PATH.read_text())
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            return []
+    return _migrate_legacy_tokens()
 
 
-def _write_tokens(tokens: dict[str, Any]) -> None:
+def _save_accounts(accounts: list[dict[str, Any]]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    TOKENS_PATH.write_text(json.dumps(tokens, indent=2))
-    os.chmod(TOKENS_PATH, 0o600)
+    ACCOUNTS_PATH.write_text(json.dumps(accounts, indent=2))
+    try:
+        os.chmod(ACCOUNTS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _migrate_legacy_tokens() -> list[dict[str, Any]]:
+    if not TOKENS_PATH.exists():
+        return []
+    try:
+        old = json.loads(TOKENS_PATH.read_text())
+    except json.JSONDecodeError:
+        return []
+    email = old.get("email") or ""
+    if not old.get("refresh_token"):
+        return []
+    account = {
+        "email": email,
+        "tokens": old,
+        "calendars": [
+            {
+                "id": "primary",
+                "summary": email or "(default)",
+                "primary": True,
+                "enabled": True,
+            }
+        ],
+    }
+    accounts = [account]
+    _save_accounts(accounts)
+    return accounts
+
+
+# ── HTTP ────────────────────────────────────────────────────────────────────
 
 
 def _http_json(
@@ -85,8 +174,12 @@ def _http_json(
     method: str = "GET",
     data: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
+    body_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    body = urllib.parse.urlencode(data).encode() if data else None
+    if body_bytes is not None:
+        body = body_bytes
+    else:
+        body = urllib.parse.urlencode(data).encode() if data else None
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("Accept", "application/json")
     if data and "Content-Type" not in (headers or {}):
@@ -98,10 +191,13 @@ def _http_json(
         return json.loads(resp.read().decode())
 
 
+# ── OAuth ───────────────────────────────────────────────────────────────────
+
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     received: dict[str, str] = {}
 
-    def log_message(self, *args, **kwargs):  # silence default logging
+    def log_message(self, *args, **kwargs):
         pass
 
     def do_GET(self):  # noqa: N802
@@ -142,90 +238,15 @@ def _open_browser(url: str) -> None:
     print(f"Ouvre cette URL manuellement :\n{url}", file=sys.stderr)
 
 
-def cmd_login() -> int:
-    settings = _load_plugin_settings()
-    client_id = settings.get("clientId", "").strip()
-    client_secret = settings.get("clientSecret", "").strip()
-    if not client_id or not client_secret:
-        print(
-            "Configure d'abord clientId/clientSecret dans les réglages du plugin "
-            "(voir README pour créer l'OAuth client).",
-            file=sys.stderr,
-        )
-        return 2
-
-    port = _pick_free_port()
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
-    state = secrets.token_urlsafe(24)
-
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(SCOPES),
-        "access_type": "offline",
-        "prompt": "consent",
-        "state": state,
-    }
-    auth_url = AUTH_URL + "?" + urllib.parse.urlencode(params)
-
-    server = HTTPServer(("127.0.0.1", port), _CallbackHandler)
-    server.timeout = 300
-
-    _open_browser(auth_url)
-    print(f"Navigateur ouvert sur Google. En attente du callback (port {port})…")
-
-    deadline = time.time() + 300
-    while not _CallbackHandler.received and time.time() < deadline:
-        server.handle_request()
-
-    received = _CallbackHandler.received
-    if not received:
-        print("Timeout: aucune réponse.", file=sys.stderr)
-        return 1
-    if received.get("state") != state:
-        print("State mismatch — possible CSRF, abandon.", file=sys.stderr)
-        return 1
-    if "error" in received:
-        print(f"Erreur Google: {received['error']}", file=sys.stderr)
-        return 1
-
-    code = received["code"]
-    tok = _http_json(
-        TOKEN_URL,
-        method="POST",
-        data={
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        },
-    )
-    tok["obtained_at"] = int(time.time())
-
-    try:
-        info = _http_json(
-            USERINFO_URL,
-            headers={"Authorization": f"Bearer {tok['access_token']}"},
-        )
-        tok["email"] = info.get("email", "")
-    except Exception:
-        pass
-
-    _write_tokens(tok)
-    print(f"OK — connecté en tant que {tok.get('email') or 'compte Google'}.")
-    return 0
-
-
-def _ensure_access_token() -> str:
-    tokens = _read_tokens()
-    if not tokens:
-        raise SystemExit("not_authenticated")
+def _ensure_access_token_for(account: dict[str, Any]) -> str:
+    tokens = account.get("tokens") or {}
     expires_in = tokens.get("expires_in", 0)
     obtained_at = tokens.get("obtained_at", 0)
     if obtained_at + expires_in - 60 > time.time() and tokens.get("access_token"):
         return tokens["access_token"]
+
+    if not tokens.get("refresh_token"):
+        raise RuntimeError(f"no refresh token for {account.get('email')}")
 
     settings = _load_plugin_settings()
     refreshed = _http_json(
@@ -240,62 +261,245 @@ def _ensure_access_token() -> str:
     )
     tokens.update(refreshed)
     tokens["obtained_at"] = int(time.time())
-    _write_tokens(tokens)
+    account["tokens"] = tokens
     return tokens["access_token"]
 
 
-def cmd_fetch() -> int:
+def _fetch_calendar_list(account: dict[str, Any]) -> list[dict[str, Any]]:
+    token = _ensure_access_token_for(account)
+    data = _http_json(CALLIST_URL, headers={"Authorization": f"Bearer {token}"})
+    items = data.get("items", [])
+    out = []
+    for it in items:
+        out.append(
+            {
+                "id": it["id"],
+                "summary": it.get("summary", it["id"]),
+                "primary": it.get("primary", False),
+                "backgroundColor": it.get("backgroundColor", ""),
+                "foregroundColor": it.get("foregroundColor", ""),
+                "accessRole": it.get("accessRole", ""),
+            }
+        )
+    return out
+
+
+def _merge_calendars(
+    existing: list[dict[str, Any]], fetched: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    enabled_map = {c["id"]: c.get("enabled", False) for c in existing}
+    out = []
+    for f in fetched:
+        cal = dict(f)
+        # Default new calendars: primary is enabled, others off
+        cal["enabled"] = enabled_map.get(f["id"], bool(f.get("primary")))
+        out.append(cal)
+    return out
+
+
+def cmd_login() -> int:
     settings = _load_plugin_settings()
-    calendar_id = settings.get("calendarId", "primary") or "primary"
-    # Window: 2 days back (to allow nav to past) → 21 days forward.
+    client_id = settings.get("clientId", "").strip()
+    client_secret = settings.get("clientSecret", "").strip()
+    if not client_id or not client_secret:
+        print("Configure clientId/clientSecret first.", file=sys.stderr)
+        return 2
+
+    port = _pick_free_port()
+    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    state = secrets.token_urlsafe(24)
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent select_account",  # force le picker pour ajouter un autre compte
+        "state": state,
+    }
+    auth_url = AUTH_URL + "?" + urllib.parse.urlencode(params)
+
+    _CallbackHandler.received = {}
+    server = HTTPServer(("127.0.0.1", port), _CallbackHandler)
+    server.timeout = 300
+    _open_browser(auth_url)
+    print(f"En attente du callback (port {port})…")
+
+    deadline = time.time() + 300
+    while not _CallbackHandler.received and time.time() < deadline:
+        server.handle_request()
+
+    received = _CallbackHandler.received
+    if not received or received.get("state") != state or "error" in received:
+        print(f"Auth failed: {received}", file=sys.stderr)
+        return 1
+
+    tok = _http_json(
+        TOKEN_URL,
+        method="POST",
+        data={
+            "code": received["code"],
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+    tok["obtained_at"] = int(time.time())
+
+    email = ""
+    try:
+        info = _http_json(
+            USERINFO_URL,
+            headers={"Authorization": f"Bearer {tok['access_token']}"},
+        )
+        email = info.get("email", "")
+    except Exception:
+        pass
+    tok["email"] = email
+
+    accounts = _load_accounts()
+    existing = next((a for a in accounts if a.get("email") == email), None)
+    if existing:
+        existing["tokens"] = tok
+        account = existing
+    else:
+        account = {"email": email, "tokens": tok, "calendars": []}
+        accounts.append(account)
+
+    # Fetch calendar list right after login
+    try:
+        fetched = _fetch_calendar_list(account)
+        account["calendars"] = _merge_calendars(account.get("calendars", []), fetched)
+    except Exception as e:
+        print(f"calendar list fetch failed: {e}", file=sys.stderr)
+
+    _save_accounts(accounts)
+    print(f"OK — connecté: {email or '(unknown)'}")
+    return 0
+
+
+def cmd_list_calendars(email_arg: str | None = None) -> int:
+    accounts = _load_accounts()
+    if not accounts:
+        print("Aucun compte connecté.", file=sys.stderr)
+        return 1
+    changed = False
+    for account in accounts:
+        if email_arg and account.get("email") != email_arg:
+            continue
+        try:
+            fetched = _fetch_calendar_list(account)
+        except Exception as e:
+            print(f"list-calendars failed for {account.get('email')}: {e}", file=sys.stderr)
+            continue
+        account["calendars"] = _merge_calendars(account.get("calendars", []), fetched)
+        changed = True
+    if changed:
+        _save_accounts(accounts)
+    print("OK")
+    return 0
+
+
+def cmd_toggle_calendar(email_arg: str, cal_id: str) -> int:
+    accounts = _load_accounts()
+    for account in accounts:
+        if account.get("email") != email_arg:
+            continue
+        for cal in account.get("calendars", []):
+            if cal["id"] == cal_id:
+                cal["enabled"] = not cal.get("enabled", False)
+                _save_accounts(accounts)
+                print(f"OK — {cal_id} = {'on' if cal['enabled'] else 'off'}")
+                return 0
+    print("not found", file=sys.stderr)
+    return 1
+
+
+def cmd_fetch() -> int:
+    accounts = _load_accounts()
+    if not accounts:
+        print("Aucun compte connecté.", file=sys.stderr)
+        return 1
+
+    settings = _load_plugin_settings()
     past_days = int(settings.get("windowPastDays", 2) or 2)
     future_days = int(settings.get("windowFutureDays", 21) or 21)
-
-    access_token = _ensure_access_token()
 
     now_ts = time.time()
     time_min = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts - past_days * 86400))
     time_max = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts + future_days * 86400))
 
-    params = urllib.parse.urlencode(
-        {
-            "timeMin": time_min,
-            "timeMax": time_max,
-            "maxResults": 250,
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
-    )
-    url = EVENTS_URL_TMPL.format(cal=urllib.parse.quote(calendar_id, safe="")) + "?" + params
+    all_events: list[dict[str, Any]] = []
+    enabled_count = 0
+    for account in accounts:
+        try:
+            token = _ensure_access_token_for(account)
+        except Exception as e:
+            print(f"refresh failed for {account.get('email')}: {e}", file=sys.stderr)
+            continue
+        for cal in account.get("calendars", []):
+            if not cal.get("enabled"):
+                continue
+            enabled_count += 1
+            params = urllib.parse.urlencode(
+                {
+                    "timeMin": time_min,
+                    "timeMax": time_max,
+                    "maxResults": 250,
+                    "singleEvents": "true",
+                    "orderBy": "startTime",
+                }
+            )
+            url = (
+                EVENTS_URL_TMPL.format(cal=urllib.parse.quote(cal["id"], safe=""))
+                + "?"
+                + params
+            )
+            try:
+                data = _http_json(url, headers={"Authorization": f"Bearer {token}"})
+            except Exception as e:
+                print(f"fetch failed for {cal['id']}: {e}", file=sys.stderr)
+                continue
+            for it in data.get("items", []):
+                start = it.get("start", {})
+                end = it.get("end", {})
+                all_events.append(
+                    {
+                        # Composite ID across account+event to avoid collisions
+                        "id": f"{account.get('email','')}|{it.get('id','')}",
+                        "title": it.get("summary", "(sans titre)"),
+                        "location": it.get("location", ""),
+                        "htmlLink": it.get("htmlLink", ""),
+                        "start": start.get("dateTime") or start.get("date"),
+                        "end": end.get("dateTime") or end.get("date"),
+                        "allDay": "date" in start and "dateTime" not in start,
+                        "calendarId": cal["id"],
+                        "calendarSummary": cal.get("summary", ""),
+                        "calendarColor": cal.get("backgroundColor", ""),
+                        "accountEmail": account.get("email", ""),
+                    }
+                )
 
-    data = _http_json(url, headers={"Authorization": f"Bearer {access_token}"})
-    items = data.get("items", [])
-
-    simplified = []
-    for it in items:
-        start = it.get("start", {})
-        end = it.get("end", {})
-        simplified.append(
-            {
-                "id": it.get("id"),
-                "title": it.get("summary", "(sans titre)"),
-                "location": it.get("location", ""),
-                "htmlLink": it.get("htmlLink", ""),
-                "start": start.get("dateTime") or start.get("date"),
-                "end": end.get("dateTime") or end.get("date"),
-                "allDay": "date" in start and "dateTime" not in start,
-            }
-        )
+    all_events.sort(key=lambda e: e["start"] or "")
+    _save_accounts(accounts)  # persist any token refreshes
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"fetchedAt": int(time.time()), "events": simplified}
+    payload = {"fetchedAt": int(now_ts), "events": all_events}
     EVENTS_PATH.write_text(json.dumps(payload, indent=2))
-    print(f"OK — {len(simplified)} événements écrits dans {EVENTS_PATH}")
+    print(
+        f"OK — {len(all_events)} events de {enabled_count} calendrier(s) sur "
+        f"{len(accounts)} compte(s)"
+    )
     return 0
 
 
 def cmd_create() -> int:
-    """Read a Google-formatted event payload from stdin and POST it."""
+    """Read event JSON from stdin and POST to chosen calendar.
+
+    The payload may include a top-level `__target` = {accountEmail, calendarId}.
+    If absent, posts to the first enabled primary calendar."""
     raw = sys.stdin.read()
     if not raw.strip():
         print("empty payload", file=sys.stderr)
@@ -306,14 +510,36 @@ def cmd_create() -> int:
         print(f"invalid JSON: {e}", file=sys.stderr)
         return 1
 
-    settings = _load_plugin_settings()
-    calendar_id = settings.get("calendarId", "primary") or "primary"
-    access_token = _ensure_access_token()
+    target = payload.pop("__target", None) or {}
+    target_email = target.get("accountEmail")
+    target_cal = target.get("calendarId")
 
-    url = EVENTS_URL_TMPL.format(cal=urllib.parse.quote(calendar_id, safe=""))
+    accounts = _load_accounts()
+    if not accounts:
+        print("Aucun compte connecté.", file=sys.stderr)
+        return 1
+
+    account = None
+    if target_email:
+        account = next((a for a in accounts if a.get("email") == target_email), None)
+    if account is None:
+        account = accounts[0]
+    if target_cal is None:
+        # primary of this account, fallback to "primary"
+        for c in account.get("calendars", []):
+            if c.get("primary"):
+                target_cal = c["id"]
+                break
+        if target_cal is None:
+            target_cal = "primary"
+
+    token = _ensure_access_token_for(account)
+    _save_accounts(accounts)
+
+    url = EVENTS_URL_TMPL.format(cal=urllib.parse.quote(target_cal, safe=""))
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Authorization", f"Bearer {access_token}")
+    req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
@@ -323,26 +549,44 @@ def cmd_create() -> int:
 
 
 def cmd_status() -> int:
-    tokens = _read_tokens()
-    if not tokens.get("refresh_token"):
+    accounts = _load_accounts()
+    if not accounts:
         print("not_authenticated")
         return 1
-    print(f"authenticated\t{tokens.get('email', '')}")
+    for a in accounts:
+        cals = a.get("calendars", [])
+        enabled = sum(1 for c in cals if c.get("enabled"))
+        print(f"authenticated\t{a.get('email','')}\t{enabled}/{len(cals)} calendars")
     return 0
 
 
-def cmd_logout() -> int:
-    if TOKENS_PATH.exists():
-        TOKENS_PATH.unlink()
-    if EVENTS_PATH.exists():
-        EVENTS_PATH.unlink()
-    print("OK — déconnecté.")
+def cmd_logout(email_arg: str | None = None) -> int:
+    if email_arg in (None, "", "all"):
+        if ACCOUNTS_PATH.exists():
+            ACCOUNTS_PATH.unlink()
+        if TOKENS_PATH.exists():
+            TOKENS_PATH.unlink()
+        if EVENTS_PATH.exists():
+            EVENTS_PATH.unlink()
+        print("OK — tous les comptes déconnectés.")
+        return 0
+    accounts = _load_accounts()
+    new_accounts = [a for a in accounts if a.get("email") != email_arg]
+    if len(new_accounts) == len(accounts):
+        print(f"not found: {email_arg}", file=sys.stderr)
+        return 1
+    if new_accounts:
+        _save_accounts(new_accounts)
+    else:
+        if ACCOUNTS_PATH.exists():
+            ACCOUNTS_PATH.unlink()
+    print(f"OK — {email_arg} déconnecté.")
     return 0
 
 
 # ─── Notification daemon ─────────────────────────────────────────────────────
 
-CHECKPOINTS = [15, 5, 0]  # minutes avant le start
+CHECKPOINTS = [15, 5, 0]
 SNOOZE_SECONDS = 5 * 60
 NOTIF_STATE_PATH = STATE_DIR / "notif_state.json"
 PIDFILE_PATH = STATE_DIR / "daemon.pid"
@@ -379,25 +623,23 @@ def _fmt_hhmm(ts: float) -> str:
 
 
 def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
-    """Spawn notify-send (--wait) in a worker thread and apply the action."""
-
     def worker():
         start_ts = _parse_iso(ev.get("start"))
         if start_ts is None:
             return
         end_ts = _parse_iso(ev.get("end")) or start_ts
         delta_min = round((start_ts - time.time()) / 60)
-
         if delta_min > 0:
             when_text = f"dans {delta_min} min"
         elif delta_min == 0:
             when_text = "maintenant"
         else:
             when_text = f"il y a {-delta_min} min"
-
         title = ev.get("title") or "(sans titre)"
         summary = f"{title} — {when_text}"
         body_lines = [f"{_fmt_hhmm(start_ts)} – {_fmt_hhmm(end_ts)}"]
+        if ev.get("calendarSummary"):
+            body_lines.append("📅 " + ev["calendarSummary"])
         if ev.get("location"):
             body_lines.append(ev["location"])
         body = "\n".join(body_lines)
@@ -407,7 +649,7 @@ def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
                 [
                     "notify-send",
                     "--app-name=Google Calendar",
-                    "--icon=x-office-calendar",
+                    f"--icon={_ensure_icon()}",
                     "--urgency=normal",
                     "--action=snooze=Snooze 5 min",
                     "--action=stop=Stop",
@@ -433,8 +675,6 @@ def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
             state = _load_notif_state()
             ev_state = state.setdefault(ev_id, {})
             if action == "snooze":
-                # Snooze fait taire tous les checkpoints restants pour cet event
-                # et programme un seul refire 5 min plus tard.
                 ev_state["firedCheckpoints"] = sorted(CHECKPOINTS)
                 ev_state["snoozeUntil"] = int(time.time()) + SNOOZE_SECONDS
                 ev_state["snoozeFromCheckpoint"] = checkpoint
@@ -470,18 +710,14 @@ def _check_and_notify() -> None:
         if start_ts is None:
             continue
         end_ts = _parse_iso(ev.get("end")) or start_ts
-
-        # GC: skip events ended > 1h ago
         if end_ts < now - 3600:
             continue
 
         current_ids.add(ev_id)
         ev_state = state.get(ev_id, {})
-
         if ev_state.get("stopped"):
             continue
 
-        # Snooze refire
         snooze_until = ev_state.get("snoozeUntil")
         if snooze_until:
             if now >= snooze_until:
@@ -491,13 +727,11 @@ def _check_and_notify() -> None:
                 state[ev_id] = ev_state
             continue
 
-        # Regular checkpoints
         fired = set(ev_state.get("firedCheckpoints", []))
         for cp in CHECKPOINTS:
             if cp in fired:
                 continue
             cp_time = start_ts - cp * 60
-            # Window: don't fire if we missed it by > 14 min (avoid spam on restart)
             if cp_time <= now < cp_time + 14 * 60:
                 _fire_notification(ev, cp)
                 fired.add(cp)
@@ -507,7 +741,6 @@ def _check_and_notify() -> None:
             ev_state["firedCheckpoints"] = sorted(fired)
             state[ev_id] = ev_state
 
-    # Drop state for events out of the current window
     for stale_id in list(state.keys()):
         if stale_id not in current_ids:
             del state[stale_id]
@@ -571,18 +804,40 @@ def cmd_daemon() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=["login", "fetch", "create", "status", "logout", "daemon"]
+        "command",
+        choices=[
+            "login",
+            "fetch",
+            "create",
+            "status",
+            "logout",
+            "daemon",
+            "list-calendars",
+            "toggle-calendar",
+        ],
     )
+    parser.add_argument("args", nargs="*")
     args = parser.parse_args()
     try:
-        return {
-            "login": cmd_login,
-            "fetch": cmd_fetch,
-            "create": cmd_create,
-            "status": cmd_status,
-            "logout": cmd_logout,
-            "daemon": cmd_daemon,
-        }[args.command]()
+        if args.command == "login":
+            return cmd_login()
+        elif args.command == "fetch":
+            return cmd_fetch()
+        elif args.command == "create":
+            return cmd_create()
+        elif args.command == "status":
+            return cmd_status()
+        elif args.command == "logout":
+            return cmd_logout(args.args[0] if args.args else None)
+        elif args.command == "daemon":
+            return cmd_daemon()
+        elif args.command == "list-calendars":
+            return cmd_list_calendars(args.args[0] if args.args else None)
+        elif args.command == "toggle-calendar":
+            if len(args.args) < 2:
+                print("usage: toggle-calendar <email> <calendarId>", file=sys.stderr)
+                return 2
+            return cmd_toggle_calendar(args.args[0], args.args[1])
     except urllib.error.HTTPError as e:
         body = ""
         try:
@@ -591,6 +846,7 @@ def main() -> int:
             pass
         print(f"HTTP {e.code}: {body}", file=sys.stderr)
         return 1
+    return 0
 
 
 if __name__ == "__main__":
