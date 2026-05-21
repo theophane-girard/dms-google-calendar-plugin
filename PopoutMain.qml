@@ -35,7 +35,7 @@ FocusScope {
 
     // Densité verticale (px par minute) pour les tuiles horaires
     readonly property real pxPerMin: 1.5
-    readonly property real minTileHeight: 28
+    readonly property real minTileHeight: 44
 
     readonly property bool viewIncludesToday: {
         for (var i = 0; i < scopeDays; ++i) {
