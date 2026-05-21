@@ -756,6 +756,39 @@ def _fire_notification(ev: dict[str, Any], checkpoint: int) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _next_wakeup_seconds(state: dict[str, Any], events: list, now: float) -> float | None:
+    """Compute seconds until the next un-fired checkpoint or snooze expiry."""
+    min_wait: float | None = None
+    for ev in events:
+        ev_id = ev.get("id")
+        if not ev_id or ev.get("allDay"):
+            continue
+        start_ts = _parse_iso(ev.get("start"))
+        if start_ts is None:
+            continue
+        end_ts = _parse_iso(ev.get("end")) or start_ts
+        if end_ts < now - 3600:
+            continue
+        ev_state = state.get(ev_id, {})
+        if ev_state.get("stopped"):
+            continue
+        snooze_until = ev_state.get("snoozeUntil")
+        if snooze_until and snooze_until > now:
+            wait = snooze_until - now
+            if min_wait is None or wait < min_wait:
+                min_wait = wait
+            continue
+        fired = set(ev_state.get("firedCheckpoints", []))
+        for cp in CHECKPOINTS:
+            if cp in fired:
+                continue
+            cp_time = start_ts - cp * 60
+            wait = cp_time - now
+            if wait > 0 and (min_wait is None or wait < min_wait):
+                min_wait = wait
+    return min_wait
+
+
 def _check_and_notify() -> None:
     if not EVENTS_PATH.exists():
         return
@@ -862,7 +895,19 @@ def cmd_daemon() -> int:
                 _check_and_notify()
             except Exception as e:
                 print(f"daemon: {e}", file=sys.stderr)
-            time.sleep(60)
+            sleep_for = 60.0
+            try:
+                with _state_lock:
+                    state = _load_notif_state()
+                events: list = []
+                if EVENTS_PATH.exists():
+                    events = json.loads(EVENTS_PATH.read_text()).get("events", [])
+                next_wait = _next_wakeup_seconds(state, events, time.time())
+                if next_wait is not None:
+                    sleep_for = min(60.0, max(1.0, next_wait + 0.5))
+            except Exception:
+                pass
+            time.sleep(sleep_for)
     finally:
         try:
             PIDFILE_PATH.unlink()
